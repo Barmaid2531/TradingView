@@ -2,7 +2,34 @@
 import streamlit as st
 import gspread
 import pandas as pd
-import requests # Import requests
+import requests
+
+# --- STOCK UNIVERSE (Swedish Large & Mid Cap + Others) ---
+# Format: "TICKER | Company Name"
+STOCK_LIST = [
+    "ABB.ST | ABB Ltd", "ALFA.ST | Alfa Laval", "ALIV-SDB.ST | Autoliv", 
+    "ASSA-B.ST | Assa Abloy B", "ATCO-A.ST | Atlas Copco A", "ATCO-B.ST | Atlas Copco B",
+    "AXFO.ST | Axfood", "AZN.ST | AstraZeneca", "BALD-B.ST | Fastighets AB Balder",
+    "BEIJ-B.ST | Beijer Ref", "BILL.ST | Billerud", "BOL.ST | Boliden",
+    "CAST.ST | Castellum", "ELUX-B.ST | Electrolux B", "EQT.ST | EQT",
+    "ERIC-B.ST | Ericsson B", "ESSITY-B.ST | Essity B", "EVO.ST | Evolution",
+    "FABG.ST | Fabege", "GETI-B.ST | Getinge B", "HEXA-B.ST | Hexagon B",
+    "HM-B.ST | Hennes & Mauritz B", "HOLM-B.ST | Holmen B", "HPOL-B.ST | Hexpol B",
+    "HUSQ-B.ST | Husqvarna B", "INDU-C.ST | Industrivärden C", "INVE-B.ST | Investor B",
+    "JM.ST | JM", "KINV-B.ST | Kinnevik B", "LATO-B.ST | Latour B",
+    "LIFCO-B.ST | Lifco B", "LUMI.ST | Lundin Mining", "NDA-SE.ST | Nordea Bank",
+    "NIBE-B.ST | Nibe Industrier B", "NYF.ST | Nyfosa", "PEAB-B.ST | Peab B",
+    "SAAB-B.ST | Saab B", "SAGA-B.ST | Sagax B", "SAND.ST | Sandvik",
+    "SBB-B.ST | Samhällsbyggnadsbolaget B", "SCA-B.ST | SCA B", "SEB-A.ST | SEB A",
+    "SECU-B.ST | Securitas B", "SHB-A.ST | Svenska Handelsbanken A", "SINCH.ST | Sinch",
+    "SKA-B.ST | Skanska B", "SKF-B.ST | SKF B", "SSAB-A.ST | SSAB A",
+    "SSAB-B.ST | SSAB B", "STE-R.ST | Stora Enso R", "SWED-A.ST | Swedbank A",
+    "SWMA.ST | Swedish Match", "TEL2-B.ST | Tele2 B", "TELIA.ST | Telia Company",
+    "THULE.ST | Thule Group", "TREL-B.ST | Trelleborg B", "TRUE-B.ST | Truecaller B",
+    "VOLCAR-B.ST | Volvo Car B", "VOLV-A.ST | Volvo A", "VOLV-B.ST | Volvo B",
+    "WALL-B.ST | Wallenstam B", "VITR.ST | Vitrolife", "VAR.OL | Vår Energi (Norway)",
+    "EQNR.OL | Equinor (Norway)", "MAERSK-B.CO | Maersk B (Denmark)"
+]
 
 def get_google_sheet_data():
     try:
@@ -27,22 +54,10 @@ def save_portfolio(df):
         sheet.clear()
         sheet.update([df.columns.values.tolist()] + df.values.tolist())
 
-# --- NEW: Notification Function ---
 def send_notification(title, message):
-    """Sends a push notification via ntfy.sh"""
     topic = st.secrets.get("NTFY_TOPIC")
-    if not topic:
-        return # Fail silently if no topic configured
-    
+    if not topic: return
     try:
-        requests.post(
-            f"https://ntfy.sh/{topic}",
-            data=message.encode(encoding='utf-8'),
-            headers={
-                "Title": title,
-                "Priority": "high",
-                "Tags": "chart_with_upwards_trend" if "Buy" in title else "warning"
-            }
-        )
+        requests.post(f"https://ntfy.sh/{topic}", data=message.encode('utf-8'), headers={"Title": title, "Priority": "high"})
     except Exception as e:
-        print(f"Failed to send notification: {e}")
+        print(f"Notification failed: {e}")
