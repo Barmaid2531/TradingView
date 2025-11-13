@@ -19,11 +19,9 @@ st.set_page_config(layout="wide", page_title="My Portfolio")
 # --- CSS FIX FOR BROKEN ICONS ---
 st.markdown("""
     <style>
-    /* This hides the broken 'keyboard_arrow_right' text caused by firewalls */
     div[data-testid="stExpander"] summary > span:first-child {
         display: none !important;
     }
-    /* Optional: Add a simple border to make the clickable area obvious since the arrow is gone */
     div[data-testid="stExpander"] {
         border: 1px solid #333;
         border-radius: 5px;
@@ -110,10 +108,13 @@ with st.expander("Manually Add Holding"):
         if st.form_submit_button("Add"):
             if t and q > 0: add_manual_holding(t, q, p, n); st.rerun()
 
-df = read_portfolio()
-if df.empty: st.info("Portfolio is empty.")
+# FIX: Using 'portfolio_df' consistently
+portfolio_df = read_portfolio()
+
+if portfolio_df.empty:
+    st.info("Portfolio is empty.")
 else:
-    open_pos = df[df['Status'] == 'Open'].copy()
+    open_pos = portfolio_df[portfolio_df['Status'] == 'Open'].copy()
     total_val = 0
     if not open_pos.empty:
         st.markdown("### Open Positions")
@@ -132,7 +133,7 @@ else:
             
             if "SELL" in det['signal']:
                 st.error(det['signal'])
-                # Only notify if configured
+                # Notify if configured
                 send_notification(f"SELL SIGNAL: {row['Ticker']}", f"{det['signal']}\nCurrent Price: {det['price']:.2f}")
             else: 
                 st.success(det['signal'])
@@ -158,5 +159,6 @@ else:
         st.header(f"Total Value: {total_val:,.2f} SEK")
 
     st.markdown("### Position History")
+    # This line caused the error before, now it will work because portfolio_df is defined
     closed = portfolio_df[portfolio_df['Status'] != 'Open']
     if not closed.empty: st.dataframe(closed)
