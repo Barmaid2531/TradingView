@@ -16,16 +16,11 @@ from utils import read_portfolio, save_portfolio, send_notification
 # --- PAGE CONFIG ---
 st.set_page_config(layout="wide", page_title="My Portfolio")
 
-# --- CSS FIX FOR BROKEN ICONS ---
+# --- CSS FIX ---
 st.markdown("""
     <style>
-    div[data-testid="stExpander"] summary > span:first-child {
-        display: none !important;
-    }
-    div[data-testid="stExpander"] {
-        border: 1px solid #333;
-        border-radius: 5px;
-    }
+    div[data-testid="stExpander"] summary > span:first-child { display: none !important; }
+    div[data-testid="stExpander"] { border: 1px solid #333; border-radius: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -108,7 +103,6 @@ with st.expander("Manually Add Holding"):
         if st.form_submit_button("Add"):
             if t and q > 0: add_manual_holding(t, q, p, n); st.rerun()
 
-# FIX: Using 'portfolio_df' consistently
 portfolio_df = read_portfolio()
 
 if portfolio_df.empty:
@@ -119,46 +113,64 @@ else:
     if not open_pos.empty:
         st.markdown("### Open Positions")
         for i, row in open_pos.iterrows():
-            det = get_position_details_with_retry(row['Ticker'])
-            if not det: 
-                st.warning(f"Check ticker: {row['Ticker']}")
-                continue
-            
-            val = det['price'] * row['Quantity']
-            total_val += val
-            pnl = ((det['price'] / row['EntryPrice']) - 1) * 100 if row['EntryPrice'] > 0 else 0
-            
             st.markdown("---")
+            
+            # Fetch data
+            det = get_position_details_with_retry(row['Ticker'])
+            
+            # Show header regardless of data success
             st.subheader(f"{row['Ticker']} ({row['Quantity']} shares)")
-            
-            if "SELL" in det['signal']:
-                st.error(det['signal'])
-                # Notify if configured
-                send_notification(f"SELL SIGNAL: {row['Ticker']}", f"{det['signal']}\nCurrent Price: {det['price']:.2f}")
-            else: 
-                st.success(det['signal'])
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Value", f"{val:,.2f}")
-            c2.metric("Entry", f"{row['EntryPrice']:,.2f}")
-            c3.metric("Price", f"{det['price']:.2f}")
-            c4.markdown(f"**P/L:** <span style='color:{'green' if pnl>=0 else 'red'}'>{pnl:.2f}%</span>", unsafe_allow_html=True)
-            
-            with st.expander("Details & Actions"):
-                st.plotly_chart(create_portfolio_chart(det['chart_data'], row['EntryPrice']), use_container_width=True)
+
+            if det:
+                # --- HAPPY PATH: Data Found ---
+                val = det['price'] * row['Quantity']
+                total_val += val
+                pnl = ((det['price'] / row['EntryPrice']) - 1) * 100 if row['EntryPrice'] > 0 else 0
+                
+                if "SELL" in det['signal']:
+                    st.error(det['signal'])
+                    send_notification(f"SELL: {row['Ticker']}", f"{det['signal']}")
+                else: 
+                    st.success(det['signal'])
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Value", f"{val:,.2f}")
+                c2.metric("Entry", f"{row['EntryPrice']:,.2f}")
+                c3.metric("Price", f"{det['price']:.2f}")
+                c4.markdown(f"**P/L:** <span style='color:{'green' if pnl>=0 else 'red'}'>{pnl:.2f}%</span>", unsafe_allow_html=True)
+                
+                chart_data = det['chart_data']
+            else:
+                # --- ERROR PATH: Data Not Found ---
+                st.warning("⚠️ Could not fetch live data. You can still edit or remove this holding below.")
+                chart_data = None
+
+            # --- MANAGEMENT SECTION (Always Visible) ---
+            with st.expander("Manage Position"):
+                if chart_data is not None:
+                    st.plotly_chart(create_portfolio_chart(chart_data, row['EntryPrice']), use_container_width=True)
+                
+                st.markdown("#### Edit Details")
                 with st.form(key=f"edit_{i}"):
                     nq = st.number_input("Qty", value=float(row['Quantity']))
                     np = st.number_input("Price", value=float(row['EntryPrice']))
                     nn = st.text_area("Notes", value=str(row['Notes']))
-                    if st.form_submit_button("Save"): update_holding(i, nq, np, nn); st.rerun()
+                    if st.form_submit_button("Save Changes"): 
+                        update_holding(i, nq, np, nn)
+                        st.rerun()
+                
+                st.markdown("#### Actions")
                 b1, b2 = st.columns(2)
-                if b1.button("Close", key=f"cl_{i}"): update_status(i, f"Closed {datetime.now().date()}"); st.rerun()
-                if b2.button("Remove", key=f"rm_{i}"): remove_holding(i); st.rerun()
+                if b1.button("Close Position", key=f"cl_{i}"): 
+                    update_status(i, f"Closed {datetime.now().date()}")
+                    st.rerun()
+                if b2.button("Remove Permanently", key=f"rm_{i}", type="primary"): 
+                    remove_holding(i)
+                    st.rerun()
         
         st.markdown("---")
         st.header(f"Total Value: {total_val:,.2f} SEK")
 
     st.markdown("### Position History")
-    # This line caused the error before, now it will work because portfolio_df is defined
     closed = portfolio_df[portfolio_df['Status'] != 'Open']
     if not closed.empty: st.dataframe(closed)
