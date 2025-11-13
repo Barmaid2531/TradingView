@@ -9,7 +9,7 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import read_portfolio, save_portfolio
+from utils import read_portfolio, save_portfolio, send_notification
 
 @st.cache_data(ttl=43200)
 def get_position_details(ticker):
@@ -76,7 +76,7 @@ def remove_holding(index):
     st.toast("Removed.", icon="🗑️")
 
 st.set_page_config(layout="wide", page_title="My Portfolio")
-st.title("💼 My Cloud Portfolio (Google Sheets)")
+st.title("💼 My Cloud Portfolio")
 
 with st.expander("Manually Add Holding"):
     with st.form(key="manual"):
@@ -106,8 +106,15 @@ else:
             
             st.markdown("---")
             st.subheader(f"{row['Ticker']} ({row['Quantity']} shares)")
-            if "SELL" in det['signal']: st.error(det['signal'])
-            else: st.success(det['signal'])
+            
+            if "SELL" in det['signal']:
+                st.error(det['signal'])
+                # --- NEW: Notify on Sell Signal ---
+                # Note: This sends every time the page loads. 
+                # A more advanced version would check if we already notified today.
+                send_notification(f"SELL SIGNAL: {row['Ticker']}", f"{det['signal']}\nCurrent Price: {det['price']:.2f}")
+            else: 
+                st.success(det['signal'])
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Value", f"{val:,.2f}")
@@ -128,3 +135,7 @@ else:
         
         st.markdown("---")
         st.header(f"Total Value: {total_val:,.2f} SEK")
+
+    st.markdown("### Position History")
+    closed = portfolio_df[portfolio_df['Status'] != 'Open']
+    if not closed.empty: st.dataframe(closed)
