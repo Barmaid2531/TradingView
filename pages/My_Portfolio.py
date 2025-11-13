@@ -7,9 +7,33 @@ from datetime import datetime
 import time
 import sys
 import os
+from pathlib import Path
 
+# Add parent directory to path to import utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import read_portfolio, save_portfolio, send_notification
+
+# --- PAGE CONFIG ---
+st.set_page_config(layout="wide", page_title="My Portfolio")
+
+# --- CSS FIX FOR BROKEN ICONS ---
+st.markdown("""
+    <style>
+    /* This hides the broken 'keyboard_arrow_right' text caused by firewalls */
+    div[data-testid="stExpander"] summary > span:first-child {
+        display: none !important;
+    }
+    /* Optional: Add a simple border to make the clickable area obvious since the arrow is gone */
+    div[data-testid="stExpander"] {
+        border: 1px solid #333;
+        border-radius: 5px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("💼 My Cloud Portfolio")
+
+# --- HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=43200)
 def get_position_details(ticker):
@@ -75,8 +99,7 @@ def remove_holding(index):
     save_portfolio(df)
     st.toast("Removed.", icon="🗑️")
 
-st.set_page_config(layout="wide", page_title="My Portfolio")
-st.title("💼 My Cloud Portfolio")
+# --- MAIN CONTENT ---
 
 with st.expander("Manually Add Holding"):
     with st.form(key="manual"):
@@ -109,9 +132,7 @@ else:
             
             if "SELL" in det['signal']:
                 st.error(det['signal'])
-                # --- NEW: Notify on Sell Signal ---
-                # Note: This sends every time the page loads. 
-                # A more advanced version would check if we already notified today.
+                # Only notify if configured
                 send_notification(f"SELL SIGNAL: {row['Ticker']}", f"{det['signal']}\nCurrent Price: {det['price']:.2f}")
             else: 
                 st.success(det['signal'])
