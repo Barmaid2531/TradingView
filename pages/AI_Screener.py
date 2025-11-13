@@ -7,9 +7,9 @@ from datetime import datetime
 import sys
 import os
 
-# Fix import path
+# Import utils including the new send_notification
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import read_portfolio, save_portfolio
+from utils import read_portfolio, save_portfolio, send_notification
 
 OMXS30_TICKERS = [
     "ABB.ST", "ALFA.ST", "ALIV-SDB.ST", "ASSA-B.ST", "AZN.ST", "ATCO-A.ST", 
@@ -21,7 +21,6 @@ OMXS30_TICKERS = [
 
 def add_to_portfolio(ticker, entry_price, quantity, notes):
     df = read_portfolio()
-    
     if not df.empty and not df[(df['Ticker'] == ticker) & (df['Status'] == 'Open')].empty:
         st.toast(f"{ticker} is already in your portfolio.", icon="⚠️")
         return
@@ -53,10 +52,8 @@ def analyze_stock_for_signal(ticker):
         if len(hist) < 200: return None
         info = stock.info
         
-        # --- INDICATORS ---
         hist['SMA50'] = hist['Close'].rolling(window=50).mean()
         hist['SMA200'] = hist['Close'].rolling(window=200).mean()
-        
         delta = hist['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -71,21 +68,16 @@ def analyze_stock_for_signal(ticker):
         hist['BB_Middle'] = hist['Close'].rolling(window=20).mean()
         hist['BB_Std'] = hist['Close'].rolling(window=20).std()
         hist['BB_Upper'] = hist['BB_Middle'] + (2 * hist['BB_Std'])
-        
         hist['AvgVolume20'] = hist['Volume'].rolling(window=20).mean()
-
-        # --- PREDICTIVE INDICATORS (ATR) ---
-        # True Range Calculation
+        
         hist['High-Low'] = hist['High'] - hist['Low']
         hist['High-PrevClose'] = abs(hist['High'] - hist['Close'].shift(1))
         hist['Low-PrevClose'] = abs(hist['Low'] - hist['Close'].shift(1))
         hist['TR'] = hist[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
-        # ATR Calculation (14-day moving average of True Range)
         hist['ATR'] = hist['TR'].rolling(window=14).mean()
 
         latest = hist.iloc[-1]
         
-        # --- SCORING ---
         score = 0
         reasons = []
         if latest['Close'] > latest['SMA200']: score += 1; reasons.append("Bullish Trend")
@@ -94,10 +86,7 @@ def analyze_stock_for_signal(ticker):
         if latest['Close'] < (latest['BB_Upper'] * 0.98): score += 1; reasons.append("Below Upper BB")
         if latest['Volume'] > latest['AvgVolume20']: score += 1; reasons.append("High Volume")
 
-        # --- TARGETS ---
-        # Stop Loss = 1.5x ATR below price
         stop_loss = latest['Close'] - (1.5 * latest['ATR'])
-        # Take Profit = 2.0x ATR above price
         take_profit = latest['Close'] + (2.0 * latest['ATR'])
 
         if score >= 3:
@@ -130,7 +119,16 @@ if st.button("🚀 Run Scan", type="primary"):
                 res = analyze_stock_for_signal(ticker)
                 if res: signals.append(res)
                 progress.progress((i + 1) / len(tickers_to_scan))
-        st.session_state['screener_results'] = sorted(signals, key=lambda x: x['score'], reverse=True)
+        
+        sorted_signals = sorted(signals, key=lambda x: x['score'], reverse=True)
+        st.session_state['screener_results'] = sorted_signals
+        
+        # --- NEW: Send Notification ---
+        if sorted_signals:
+            top_pick = sorted_signals[0]
+            msg = f"Found {len(sorted_signals)} potential buys.\nTop Pick: {top_pick['ticker']} (Score {top_pick['score']}/5)"
+            send_notification("Screener Results", msg)
+            st.toast("Notification sent to phone!", icon="📱")
 
 if 'screener_results' in st.session_state:
     if not st.session_state['screener_results']: st.warning("No stocks met criteria.")
@@ -147,9 +145,8 @@ if 'screener_results' in st.session_state:
                 st.caption(f"**Why?** {', '.join(sig['reasons'])}")
             with c2: st.metric("Price", f"{sig['price']:.2f} SEK")
             
-            # --- NEW: DISPLAY TARGETS ---
             t1, t2 = st.columns(2)
-            t1.metric("🎯 Target (Take Profit)", f"{sig['take_profit']:.2f} SEK", delta=f"+{(sig['take_profit']/sig['price']-1)*100:.1f}%")
+            t1.metric("🎯 Target", f"{sig['take_profit']:.2f} SEK", delta=f"+{(sig['take_profit']/sig['price']-1)*100:.1f}%")
             t2.metric("🛑 Stop Loss", f"{sig['stop_loss']:.2f} SEK", delta=f"-{(1-sig['stop_loss']/sig['price'])*100:.1f}%", delta_color="inverse")
 
             chart_col, buy_col = st.columns([3, 1])
@@ -157,7 +154,6 @@ if 'screener_results' in st.session_state:
             with buy_col:
                 with st.form(key=f"buy_{i}"):
                     qty = st.number_input("Qty", min_value=1, value=10)
-                    # Save the predicted targets as notes automatically
                     auto_notes = f"Target: {sig['take_profit']:.2f} | Stop: {sig['stop_loss']:.2f}"
                     if st.form_submit_button("Simulate Buy"): 
                         add_to_portfolio(sig['ticker'], sig['price'], qty, auto_notes)
