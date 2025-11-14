@@ -34,13 +34,20 @@ st.title("💼 My Cloud Portfolio")
 
 # --- DATA FETCHING & ANALYSIS FUNCTIONS ---
 
-@st.cache_data(ttl=180) # Update every 5 minutes
+# FIX 1: Reduced cache to 5 minutes (300 seconds) so prices update during the day
+@st.cache_data(ttl=300) 
 def get_position_details(ticker):
     """Fetches price, indicators, and chart data for a stock."""
     try:
         stock = yf.Ticker(ticker)
+        
+        # Fetch history
         hist = stock.history(period="1y")
-        if hist.empty: return None
+        
+        # Check if data is empty (common yfinance error)
+        if hist.empty: 
+            st.error(f"⚠️ Data empty for {ticker}. Check ticker symbol.")
+            return None
 
         # Calculate Moving Averages
         hist['SMA50'] = hist['Close'].rolling(window=50).mean()
@@ -57,20 +64,26 @@ def get_position_details(ticker):
         
         # Analyze for Exit Signals
         signal = "HOLD"
-        if latest['RSI'] > 75:
+        # Handle cases where RSI might be NaN (not enough data)
+        current_rsi = latest['RSI'] if pd.notna(latest['RSI']) else 50
+        
+        if current_rsi > 75:
             signal = "SELL: RSI Overbought (>75)"
-        elif latest['SMA50'] < latest['SMA200']:
-            signal = "SELL: Death Cross (50 < 200 SMA)"
+        elif pd.notna(latest['SMA50']) and pd.notna(latest['SMA200']):
+            if latest['SMA50'] < latest['SMA200']:
+                signal = "SELL: Death Cross (50 < 200 SMA)"
 
         return {
             "price": latest['Close'],
-            "rsi": latest['RSI'],
+            "rsi": current_rsi,
             "sma50": latest['SMA50'],
             "sma200": latest['SMA200'],
             "signal": signal,
             "chart_data": hist
         }
-    except Exception:
+    except Exception as e:
+        # FIX 2: Print the actual error so we can debug it
+        st.error(f"Error fetching {ticker}: {e}")
         return None
 
 def get_position_details_with_retry(ticker, retries=3):
@@ -231,4 +244,3 @@ else:
     closed = portfolio_df[portfolio_df['Status'] != 'Open']
     if not closed.empty: 
         st.dataframe(closed)
-
