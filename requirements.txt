@@ -4,3 +4,7 @@ pandas
 plotly
 gspread
 requests
+finnhub-python
+vaderSentiment
+prophet
+backtesting
