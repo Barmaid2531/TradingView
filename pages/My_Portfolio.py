@@ -46,6 +46,7 @@ def get_position_details(ticker):
         
         # Check if data is empty (common yfinance error)
         if hist.empty: 
+            # Try fetching with a suffix fix if needed, or just report error
             st.error(f"⚠️ Data empty for {ticker}. Check ticker symbol.")
             return None
 
@@ -58,14 +59,18 @@ def get_position_details(ticker):
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
+        
+        # --- FIX 2: Save 'RSI' into the DataFrame (hist) ---
+        # Previously this was 'rsi = ...', which caused the KeyError later
+        hist['RSI'] = 100 - (100 / (1 + rs))
         
         latest = hist.iloc[-1]
         
         # Analyze for Exit Signals
         signal = "HOLD"
-        # Handle cases where RSI might be NaN (not enough data)
-        current_rsi = latest['RSI'] if pd.notna(latest['RSI']) else 50
+        
+        # Safely access RSI (handle NaN if stock is too new or data is missing)
+        current_rsi = latest['RSI'] if 'RSI' in latest and pd.notna(latest['RSI']) else 50
         
         if current_rsi > 75:
             signal = "SELL: RSI Overbought (>75)"
@@ -82,7 +87,7 @@ def get_position_details(ticker):
             "chart_data": hist
         }
     except Exception as e:
-        # FIX 2: Print the actual error so we can debug it
+        # Print the actual error so we can debug it in the UI
         st.error(f"Error fetching {ticker}: {e}")
         return None
 
