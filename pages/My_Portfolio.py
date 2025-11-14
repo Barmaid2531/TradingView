@@ -15,15 +15,12 @@ from utils import read_portfolio, save_portfolio, send_notification, STOCK_LIST
 # --- PAGE CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="My Portfolio")
 
-# --- CSS FIX ---
-st.markdown("""
-    <style>
-    div[data-testid="stExpander"] summary > span:first-child { display: none !important; }
-    div[data-testid="stExpander"] { border: 1px solid #333; border-radius: 5px; }
-    </style>
-""", unsafe_allow_html=True)
+# (REMOVED THE CSS HACK HERE - This fixes the "Empty Box" look)
 
 st.title("💼 My Cloud Portfolio")
+st.markdown("""
+**Welcome to your dashboard.** Here you can track your live positions, view technical indicators (RSI, Moving Averages), and manage your holdings.
+""")
 
 # --- DATA FETCHING & ANALYSIS FUNCTIONS ---
 
@@ -47,25 +44,21 @@ def get_position_details(ticker):
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
-        hist['RSI'] = 100 - (100 / (1 + rs)) # Fix: Save RSI to dataframe
+        hist['RSI'] = 100 - (100 / (1 + rs))
         
         latest = hist.iloc[-1]
         
-        # --- NEW STRATEGY LOGIC ---
+        # --- STRATEGY LOGIC ---
         signal = "HOLD"
         current_rsi = latest['RSI'] if 'RSI' in latest and pd.notna(latest['RSI']) else 50
         sma50 = latest['SMA50']
         sma200 = latest['SMA200']
 
-        # Check conditions if SMAs are valid
         if pd.notna(sma50) and pd.notna(sma200):
-            # SELL SIGNALS
             if current_rsi > 70:
                 signal = "SELL: RSI Overbought (>70)"
             elif sma50 < sma200:
                 signal = "SELL: Death Cross (50 < 200 SMA)"
-            
-            # BUY SIGNALS (Prioritize Buy if recent crossover)
             elif current_rsi < 30:
                 signal = "BUY: RSI Oversold (<30)"
             elif sma50 > sma200:
@@ -139,16 +132,17 @@ def remove_holding(index):
 
 # --- MAIN PAGE CONTENT ---
 
-# 1. Manual Add Section
-with st.expander("Manually Add Holding"):
+# 1. Improved "Add" Section (Now explicitly labeled)
+with st.expander("➕ Add a New Position (Click to Expand)", expanded=False):
+    st.caption("Search for a stock and enter your details below to track a new position.")
     with st.form(key="manual"):
-        stock_selection = st.selectbox("Select Stock", options=STOCK_LIST, index=None, placeholder="Search ticker (e.g. Volvo)...")
+        stock_selection = st.selectbox("Select Stock", options=STOCK_LIST, index=None, placeholder="Type to search ticker (e.g. Volvo)...")
         c1, c2 = st.columns(2)
-        q = c1.number_input("Shares", min_value=1, step=1)
-        p = c2.number_input("Avg Price (GAV)")
-        n = st.text_area("Notes")
+        q = c1.number_input("Shares (Quantity)", min_value=1, step=1)
+        p = c2.number_input("Average Entry Price (SEK)")
+        n = st.text_area("Notes (Optional)", placeholder="e.g. Long term hold, swing trade target 200...")
         
-        if st.form_submit_button("Add to Portfolio"):
+        if st.form_submit_button("Add to Portfolio", type="primary"):
             if stock_selection and q > 0:
                 t = stock_selection.split("|")[0].strip()
                 add_manual_holding(t, q, p, n)
@@ -160,18 +154,16 @@ with st.expander("Manually Add Holding"):
 portfolio_df = read_portfolio()
 
 if portfolio_df.empty:
-    st.info("Your portfolio is empty. Add stocks using the form above or the AI Screener.")
+    st.info("Your portfolio is empty. Use the 'Add a New Position' menu above to get started.")
 else:
     open_pos = portfolio_df[portfolio_df['Status'] == 'Open'].copy()
     total_val = 0
 
     if not open_pos.empty:
-        st.markdown("### Open Positions")
+        st.markdown("### 🟢 Open Positions")
         
         for i, row in open_pos.iterrows():
-            # Fetch Live Data
             det = get_position_details_with_retry(row['Ticker'])
-            
             st.markdown("---")
             st.subheader(f"{row['Ticker']} ({row['Quantity']} shares)")
 
@@ -180,15 +172,14 @@ else:
                 total_val += val
                 pnl = ((det['price'] / row['EntryPrice']) - 1) * 100 if row['EntryPrice'] > 0 else 0
                 
-                # --- NEW VISUAL LOGIC ---
+                # Signal Visualization
                 if "SELL" in det['signal']:
-                    st.warning(f"📉 {det['signal']}") # Orange box for Warning
+                    st.warning(f"📉 {det['signal']}") 
                 elif "BUY" in det['signal']:
-                    st.success(f"🚀 {det['signal']}") # Green box for Opportunity
+                    st.success(f"🚀 {det['signal']}") 
                 else:
-                    st.info(f"✋ {det['signal']}") # Blue box for Neutral
+                    st.info(f"✋ {det['signal']}") 
                 
-                # Metrics Row
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Value", f"{val:,.2f} SEK")
                 c2.metric("Entry", f"{row['EntryPrice']:,.2f} SEK")
@@ -200,8 +191,7 @@ else:
                 st.warning("⚠️ Could not fetch live data. You can still manage this position below.")
                 chart_data = None
 
-            # Management Section
-            with st.expander("Details & Actions"):
+            with st.expander("📊 Charts & Actions"):
                 if chart_data is not None:
                     st.plotly_chart(create_portfolio_chart(chart_data, row['EntryPrice']), use_container_width=True)
                 
@@ -219,7 +209,7 @@ else:
                 if b1.button("Close Position", key=f"cl_{i}"): 
                     update_status(i, f"Closed {datetime.now().date()}")
                     st.rerun()
-                if b2.button("Remove Permanently", key=f"rm_{i}", type="primary"): 
+                if b2.button("Delete Permanently", key=f"rm_{i}", type="primary"): 
                     remove_holding(i)
                     st.rerun()
         
@@ -227,7 +217,7 @@ else:
         st.header(f"Total Portfolio Value: {total_val:,.2f} SEK")
 
     # 3. History Section
-    st.markdown("### Position History")
+    st.markdown("### 📜 Trade History (Closed)")
     closed = portfolio_df[portfolio_df['Status'] != 'Open']
     if not closed.empty: 
         st.dataframe(closed)
