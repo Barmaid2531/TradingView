@@ -1,83 +1,93 @@
-# Home.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
-from utils import STOCK_LIST # Import the list
+from utils import read_portfolio, get_google_sheet_data
 
-@st.cache_data(ttl=3600)
-def get_market_trend():
-    try:
-        hist = yf.Ticker("^OMXSPI").history(period="3mo")
-        if hist.empty: return "Unknown", 0
-        hist['SMA50'] = hist['Close'].rolling(window=50).mean()
-        latest_price = hist['Close'].iloc[-1]
-        sma50 = hist['SMA50'].iloc[-1]
-        trend = "Bullish" if latest_price > sma50 else "Bearish"
-        return trend, latest_price
-    except Exception: return "Error", 0
-
-def create_main_chart(ticker, data: pd.DataFrame):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=data.index, y=data['Close'], mode='lines', name='Price', line=dict(color='#007BFF')))
-    fig.add_trace(go.Scatter(x=data.index, y=data['SMA50'], mode='lines', name='50-Day SMA', line=dict(color='orange', dash='dash')))
-    fig.add_trace(go.Scatter(x=data.index, y=data['SMA200'], mode='lines', name='200-Day SMA', line=dict(color='purple', dash='dash')))
-    fig.update_layout(title=f'{ticker} Price Chart', yaxis_title='Price', template='plotly_dark', height=500)
-    return fig
-
-def display_stock_details(ticker):
-    try:
-        with st.spinner(f"Loading data for {ticker}..."):
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="1y")
-            if hist.empty:
-                st.error(f"No data found for '{ticker}'.")
-                return
-
-            company_name = stock.info.get('shortName', ticker)
-            st.subheader(f"{company_name} ({ticker})")
-            
-            hist['SMA50'] = hist['Close'].rolling(window=50).mean()
-            hist['SMA200'] = hist['Close'].rolling(window=200).mean()
-            
-            delta = hist['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            hist['RSI'] = 100 - (100 / (1 + rs))
-            latest = hist.iloc[-1]
-
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Price", f"{latest['Close']:.2f}")
-            col2.metric("RSI", f"{latest['RSI']:.2f}")
-            col3.metric("50-Day SMA", f"{latest['SMA50']:.2f}")
-            col4.metric("200-Day SMA", f"{latest['SMA200']:.2f}")
-
-            st.plotly_chart(create_main_chart(ticker, hist), use_container_width=True)
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
-
-st.set_page_config(layout="wide", page_title="Trading Dashboard")
-st.sidebar.success("Select a page from the navigation above.")
-st.title("📈 Trading Dashboard")
-
-market_trend, market_price = get_market_trend()
-trend_color = "green" if market_trend == "Bullish" else "red"
-st.subheader("Overall Market Trend (OMXSPI)")
-st.markdown(f"Trend: **<span style='color:{trend_color};'>{market_trend}</span>** | Level: {market_price:,.2f}", unsafe_allow_html=True)
-st.markdown("---")
-
-st.subheader("Search for a Stock")
-
-# --- NEW: AUTO-COMPLETE SEARCH ---
-selected_stock_string = st.selectbox(
-    "Type to search...", 
-    options=STOCK_LIST, 
-    index=None, # Starts empty
-    placeholder="e.g. Volvo, Ericsson, AZN..."
+# --- PAGE CONFIG ---
+st.set_page_config(
+    page_title="Trading Dashboard",
+    layout="wide",
+    page_icon="📈"
 )
 
-if selected_stock_string:
-    # Extract the ticker from the string "VOLV-B.ST | Volvo AB"
-    ticker_to_search = selected_stock_string.split("|")[0].strip()
-    display_stock_details(ticker_to_search)
+st.title("📈 Trading Command Center")
+
+# --- 1. MARKET PULSE SECTION ---
+@st.cache_data(ttl=3600)
+def get_market_status():
+    try:
+        # Stockholm All Share Index
+        ticker = "^OMXSPI" 
+        data = yf.Ticker(ticker).history(period="3mo")
+        
+        if data.empty: return None, None, None
+        
+        latest = data.iloc[-1]
+        prev = data.iloc[-2]
+        
+        # Calculate Trend
+        sma50 = data['Close'].rolling(window=50).mean().iloc[-1]
+        trend = "Bullish 🐂" if latest['Close'] > sma50 else "Bearish 🐻"
+        
+        # Calculate Daily Change
+        change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
+        
+        return latest['Close'], change, trend
+    except Exception:
+        return None, None, None
+
+market_price, market_change, market_trend = get_market_status()
+
+# --- 2. PORTFOLIO SUMMARY SECTION ---
+portfolio_df = read_portfolio()
+total_value = 0.0
+active_positions = 0
+top_holding = "None"
+
+if not portfolio_df.empty:
+    # Filter for open positions
+    open_pos = portfolio_df[portfolio_df['Status'] == 'Open']
+    active_positions = len(open_pos)
+    
+    if active_positions > 0:
+        # We need to fetch live prices to calculate true total value
+        # (We do a quick fetch here, or just use Entry Price for speed if preferred)
+        # Let's do a quick estimate using Entry Price to save API calls on Home load, 
+        # or fetch live if you prefer accuracy. Let's use Entry Price for speed:
+        total_value = (open_pos['EntryPrice'] * open_pos['Quantity']).sum()
+        
+        # Identify largest position by invested amount
+        open_pos['Invested'] = open_pos['EntryPrice'] * open_pos['Quantity']
+        top_holding = open_pos.sort_values('Invested', ascending=False).iloc[0]['Ticker']
+
+# --- DASHBOARD UI ---
+
+# Row 1: High Level Metrics
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.subheader("🇸🇪 Market (OMXSPI)")
+    if market_price:
+        color = "green" if market_change >= 0 else "red"
+        st.metric(
+            label=f"Trend: {market_trend}",
+            value=f"{market_price:,.2f}",
+            delta=f"{market_change:.2f}%"
+        )
+    else:
+        st.warning("Market data unavailable")
+
+with col2:
+    st.subheader("💼 Portfolio Equity")
+    # Note: This is based on Entry Price (Invested Capital). 
+    # For Live Value, visit the Portfolio page.
+    st.metric(
+        label="Invested Capital", 
+        value=f"{total_value:,.0f} SEK",
+        delta=f"{active_positions} Active Positions",
+        delta_color="off"
+    )
+
+with col3:
+    st.subheader("🏆 Top Holding")
+    st.metric
