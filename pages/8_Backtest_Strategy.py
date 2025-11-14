@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import pandas_ta as ta  # Optional, but we will define helpers manually below to be safe
 from backtesting import Backtest, Strategy
 from backtesting.lib import crossover
 import sys
@@ -12,19 +13,33 @@ from utils import STOCK_LIST
 
 st.set_page_config(layout="wide", page_title="Strategy Backtester")
 
-# --- DEFINE STRATEGIES ---
+# --- HELPER FUNCTIONS (Must be outside the class for self.I to work pickle-wise) ---
+def SMA(values, n):
+    """
+    Return simple moving average of `values`, at
+    each step taking into account `n` previous values.
+    """
+    return pd.Series(values).rolling(n).mean()
+
+def RSI(values, n=14):
+    """
+    Return RSI of `values`.
+    """
+    delta = pd.Series(values).diff()
+    gain = delta.where(delta > 0, 0).rolling(n).mean()
+    loss = -delta.where(delta < 0, 0).rolling(n).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+# --- STRATEGIES ---
 class RsiOscillator(Strategy):
     upper_bound = 70
     lower_bound = 30
     
     def init(self):
-        # Calculate RSI manually using pandas (No TA-Lib needed)
-        close = pd.Series(self.data.Close)
-        delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        self.rsi = 100 - (100 / (1 + rs))
+        # FIX: Use self.I() to register the indicator
+        # This ensures backtesting.py handles the array slicing correctly
+        self.rsi = self.I(RSI, self.data.Close, 14)
 
     def next(self):
         if self.rsi[-1] < self.lower_bound:
@@ -37,9 +52,9 @@ class SmaCross(Strategy):
     n2 = 200
     
     def init(self):
-        price = pd.Series(self.data.Close)
-        self.sma1 = price.rolling(self.n1).mean()
-        self.sma2 = price.rolling(self.n2).mean()
+        # FIX: Use self.I() to register indicators
+        self.sma1 = self.I(SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close, self.n2)
 
     def next(self):
         if crossover(self.sma1, self.sma2):
@@ -60,56 +75,50 @@ if st.button("Run Backtest"):
     try:
         ticker = ticker_sel.split("|")[0].strip()
         
-        with st.spinner(f"Downloading & cleaning data for {ticker}..."):
-            # 1. Download Data
-            data = yf.download(ticker, period="3y", progress=False)
-
-            # 2. FIX: Handle MultiIndex Columns (The yfinance update issue)
-            if isinstance(data.columns, pd.MultiIndex):
-                # If columns are ('Close', 'VOLCAR-B.ST'), extract just the ticker's data
-                try:
-                    data = data.xs(ticker, axis=1, level=1)
-                except KeyError:
-                    # Fallback: just drop the top level if structure is different
-                    data.columns = data.columns.droplevel(1)
-
-            # 3. FIX: Remove Timezone Information (The "-1" Error Cause)
-            # backtesting.py crashes if index has timezone info
-            data.index = data.index.tz_localize(None)
-
-            # 4. Ensure strictly correct columns
-            # Some yfinance versions return 'Adj Close'. We map it if 'Close' is missing.
-            if 'Close' not in data.columns and 'Adj Close' in data.columns:
-                data['Close'] = data['Adj Close']
-            
-            data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
-            
-            # Drop any missing rows (NaNs break backtesting)
-            data = data.dropna()
-
-        if data.empty:
-            st.error("No clean data found for this stock. Try another.")
-            st.stop()
+        # 1. Get Data (Cleaner Method)
+        with st.spinner(f"Downloading data for {ticker}..."):
+            # Using Ticker().history is safer than download() for single stocks
+            # It avoids MultiIndex columns issues entirely
+            data = yf.Ticker(ticker).history(period="3y")
         
-        # --- RUN BACKTEST ---
+        # 2. Data Cleaning
+        if data.empty:
+            st.error("No data found. Try another stock.")
+            st.stop()
+            
+        # Drop timezone (Critical for backtesting.py)
+        data.index = data.index.tz_localize(None)
+        
+        # Ensure columns are correct
+        data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
+        
+        # Drop NaNs (e.g. from recent splits or partial data)
+        data = data.dropna()
+
+        # 3. Choose Strategy
         strat_class = RsiOscillator if "RSI" in strat_sel else SmaCross
+        
+        # 4. Run Backtest
         bt = Backtest(data, strat_class, cash=cash, commission=.002)
         stats = bt.run()
         
-        # --- DISPLAY ---
+        # 5. Display Results
         st.markdown("### 📊 Performance Report")
         
         res1, res2, res3, res4 = st.columns(4)
-        res1.metric("Return", f"{stats['Return [%]']:.2f}%")
-        res2.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
-        res3.metric("Max Drawdown", f"{stats['Max. Drawdown [%]']:.2f}%")
-        res4.metric("Total Trades", f"{stats['# Trades']:.0f}")
+        # Helper to safe format
+        def safe_fmt(val): return f"{val:.2f}%" if isinstance(val, (int, float)) else str(val)
+        
+        res1.metric("Return", safe_fmt(stats['Return [%]']))
+        res2.metric("Win Rate", safe_fmt(stats['Win Rate [%]']))
+        res3.metric("Max Drawdown", safe_fmt(stats['Max. Drawdown [%]']))
+        res4.metric("Total Trades", f"{stats['# Trades']}")
         
         st.markdown("### 📈 Equity Curve")
         st.line_chart(stats['_equity_curve']['Equity'])
         
         with st.expander("View Full Stats"):
-            st.dataframe(stats.astype(str)) # Convert to string to avoid display errors
+            st.dataframe(stats.astype(str))
             
     except Exception as e:
-        st.error(f"Backtest failed. Technical details: {e}")
+        st.error(f"Backtest failed: {e}")
