@@ -33,11 +33,12 @@ STOCK_LIST = [
 
 def get_google_sheet_data():
     try:
+        # Ensure your secrets file has [gcp_service_account] section
         gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
         sh = gc.open("Trading Portfolio")
         return sh.sheet1
     except Exception as e:
-        st.error(f"Connection Error: {e}")
+        st.error(f"Connection Error to Google Sheets: {e}")
         return None
 
 def read_portfolio():
@@ -55,9 +56,31 @@ def save_portfolio(df):
         sheet.update([df.columns.values.tolist()] + df.values.tolist())
 
 def send_notification(title, message):
+    """
+    Sends a push notification to your phone using ntfy.sh.
+    Requires 'NTFY_TOPIC' to be set in .streamlit/secrets.toml
+    """
     topic = st.secrets.get("NTFY_TOPIC")
-    if not topic: return
+    
+    # 1. Alert user if secret is missing (Debugging Step)
+    if not topic:
+        st.toast("⚠️ Notification skipped: 'NTFY_TOPIC' missing in secrets.", icon="🔕")
+        return
+
     try:
-        requests.post(f"https://ntfy.sh/{topic}", data=message.encode('utf-8'), headers={"Title": title, "Priority": "high"})
+        # 2. Send the request
+        resp = requests.post(
+            f"https://ntfy.sh/{topic}", 
+            data=message.encode('utf-8'), 
+            headers={"Title": title, "Priority": "high"}
+        )
+        
+        # 3. Check for HTTP errors
+        if resp.status_code == 200:
+            # Success! (Silent or print to console log)
+            print(f"Notification sent to {topic}")
+        else:
+            st.error(f"Ntfy Failed (Code {resp.status_code}): {resp.text}")
+            
     except Exception as e:
-        print(f"Notification failed: {e}")
+        st.error(f"Notification System Error: {e}")
