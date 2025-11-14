@@ -34,7 +34,7 @@ st.title("💼 My Cloud Portfolio")
 
 # --- DATA FETCHING & ANALYSIS FUNCTIONS ---
 
-@st.cache_data(ttl=43200) # Cache for 12 hours to reduce API calls
+@st.cache_data(ttl=180) # Update every 5 minutes
 def get_position_details(ticker):
     """Fetches price, indicators, and chart data for a stock."""
     try:
@@ -231,3 +231,4 @@ else:
     closed = portfolio_df[portfolio_df['Status'] != 'Open']
     if not closed.empty: 
         st.dataframe(closed)
+
