@@ -18,7 +18,7 @@ class RsiOscillator(Strategy):
     lower_bound = 30
     
     def init(self):
-        # Calculate RSI manually to avoid 'talib' dependency issues
+        # Calculate RSI manually using pandas (No TA-Lib needed)
         close = pd.Series(self.data.Close)
         delta = close.diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -37,15 +37,14 @@ class SmaCross(Strategy):
     n2 = 200
     
     def init(self):
-        # Calculate SMA using standard Pandas
         price = pd.Series(self.data.Close)
         self.sma1 = price.rolling(self.n1).mean()
         self.sma2 = price.rolling(self.n2).mean()
 
     def next(self):
-        if crossover(self.sma1, self.sma2): # Golden Cross
+        if crossover(self.sma1, self.sma2):
             self.buy()
-        elif crossover(self.sma2, self.sma1): # Death Cross
+        elif crossover(self.sma2, self.sma1):
             self.position.close()
 
 # --- UI LAYOUT ---
@@ -53,7 +52,6 @@ st.title("🛠️ Strategy Backtester")
 st.markdown("Simulate how a strategy would have performed over the last 3 years.")
 
 c1, c2, c3 = st.columns(3)
-# Defaults
 ticker_sel = c1.selectbox("Stock", options=STOCK_LIST, index=0)
 strat_sel = c2.selectbox("Strategy", ["RSI Dip Buyer (Buy < 30)", "Golden Cross (SMA 50/200)"])
 cash = c3.number_input("Starting Cash", value=10000)
@@ -62,38 +60,43 @@ if st.button("Run Backtest"):
     try:
         ticker = ticker_sel.split("|")[0].strip()
         
-        # 1. Get Data
-        with st.spinner(f"Downloading 3 years of data for {ticker}..."):
+        with st.spinner(f"Downloading & cleaning data for {ticker}..."):
+            # 1. Download Data
             data = yf.download(ticker, period="3y", progress=False)
-        
-        # --- CRITICAL FIX FOR YFINANCE UPDATE ---
-        # The backtesting library fails if columns are MultiIndex (e.g. Price, Ticker)
-        # We must flatten them to just 'Open', 'High', 'Low', 'Close', 'Volume'
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            # If columns look like ('Close', 'AAPL'), drop the ticker level
-            try:
-                data.columns = data.columns.droplevel(1) 
-            except:
-                pass
 
-        # Rename columns to ensure they match exactly what Backtesting.py expects
-        # (Sometimes yfinance returns "Adj Close" which we might want to rename or just use Close)
-        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-        
-        # Ensure we have data
+            # 2. FIX: Handle MultiIndex Columns (The yfinance update issue)
+            if isinstance(data.columns, pd.MultiIndex):
+                # If columns are ('Close', 'VOLCAR-B.ST'), extract just the ticker's data
+                try:
+                    data = data.xs(ticker, axis=1, level=1)
+                except KeyError:
+                    # Fallback: just drop the top level if structure is different
+                    data.columns = data.columns.droplevel(1)
+
+            # 3. FIX: Remove Timezone Information (The "-1" Error Cause)
+            # backtesting.py crashes if index has timezone info
+            data.index = data.index.tz_localize(None)
+
+            # 4. Ensure strictly correct columns
+            # Some yfinance versions return 'Adj Close'. We map it if 'Close' is missing.
+            if 'Close' not in data.columns and 'Adj Close' in data.columns:
+                data['Close'] = data['Adj Close']
+            
+            data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
+            
+            # Drop any missing rows (NaNs break backtesting)
+            data = data.dropna()
+
         if data.empty:
-            st.error("No data found. Try a different stock.")
+            st.error("No clean data found for this stock. Try another.")
             st.stop()
         
-        # 2. Choose Strategy Class
+        # --- RUN BACKTEST ---
         strat_class = RsiOscillator if "RSI" in strat_sel else SmaCross
-        
-        # 3. Run Backtest
         bt = Backtest(data, strat_class, cash=cash, commission=.002)
         stats = bt.run()
         
-        # 4. Display Results
+        # --- DISPLAY ---
         st.markdown("### 📊 Performance Report")
         
         res1, res2, res3, res4 = st.columns(4)
@@ -106,7 +109,7 @@ if st.button("Run Backtest"):
         st.line_chart(stats['_equity_curve']['Equity'])
         
         with st.expander("View Full Stats"):
-            st.write(stats)
+            st.dataframe(stats.astype(str)) # Convert to string to avoid display errors
             
     except Exception as e:
-        st.error(f"Backtest failed: {e}")
+        st.error(f"Backtest failed. Technical details: {e}")
