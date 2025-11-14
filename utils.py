@@ -4,31 +4,49 @@ import gspread
 import pandas as pd
 import requests
 
-# --- STOCK UNIVERSE (Swedish Large & Mid Cap + Others) ---
+# --- EXPANDED STOCK UNIVERSE (~100 Liquid Tickers) ---
 # Format: "TICKER | Company Name"
 STOCK_LIST = [
-    "ABB.ST | ABB Ltd", "ALFA.ST | Alfa Laval", "ALIV-SDB.ST | Autoliv", 
-    "ASSA-B.ST | Assa Abloy B", "ATCO-A.ST | Atlas Copco A", "ATCO-B.ST | Atlas Copco B",
-    "AXFO.ST | Axfood", "AZN.ST | AstraZeneca", "BALD-B.ST | Fastighets AB Balder",
-    "BEIJ-B.ST | Beijer Ref", "BILL.ST | Billerud", "BOL.ST | Boliden",
-    "CAST.ST | Castellum", "ELUX-B.ST | Electrolux B", "EQT.ST | EQT",
-    "ERIC-B.ST | Ericsson B", "ESSITY-B.ST | Essity B", "EVO.ST | Evolution",
-    "FABG.ST | Fabege", "GETI-B.ST | Getinge B", "HEXA-B.ST | Hexagon B",
-    "HM-B.ST | Hennes & Mauritz B", "HOLM-B.ST | Holmen B", "HPOL-B.ST | Hexpol B",
-    "HUSQ-B.ST | Husqvarna B", "INDU-C.ST | Industrivärden C", "INVE-B.ST | Investor B",
-    "JM.ST | JM", "KINV-B.ST | Kinnevik B", "LATO-B.ST | Latour B",
-    "LIFCO-B.ST | Lifco B", "LUMI.ST | Lundin Mining", "NDA-SE.ST | Nordea Bank",
-    "NIBE-B.ST | Nibe Industrier B", "NYF.ST | Nyfosa", "PEAB-B.ST | Peab B",
-    "SAAB-B.ST | Saab B", "SAGA-B.ST | Sagax B", "SAND.ST | Sandvik",
-    "SBB-B.ST | Samhällsbyggnadsbolaget B", "SCA-B.ST | SCA B", "SEB-A.ST | SEB A",
-    "SECU-B.ST | Securitas B", "SHB-A.ST | Svenska Handelsbanken A", "SINCH.ST | Sinch",
-    "SKA-B.ST | Skanska B", "SKF-B.ST | SKF B", "SSAB-A.ST | SSAB A",
-    "SSAB-B.ST | SSAB B", "STE-R.ST | Stora Enso R", "SWED-A.ST | Swedbank A",
-    "SWMA.ST | Swedish Match", "TEL2-B.ST | Tele2 B", "TELIA.ST | Telia Company",
-    "THULE.ST | Thule Group", "TREL-B.ST | Trelleborg B", "TRUE-B.ST | Truecaller B",
-    "VOLCAR-B.ST | Volvo Car B", "VOLV-A.ST | Volvo A", "VOLV-B.ST | Volvo B",
-    "WALL-B.ST | Wallenstam B", "VITR.ST | Vitrolife", "VAR.OL | Vår Energi (Norway)",
-    "EQNR.OL | Equinor (Norway)", "MAERSK-B.CO | Maersk B (Denmark)"
+    # --- 🇸🇪 OMXS30 (Blue Chips) ---
+    "ABB.ST | ABB Ltd", "ALFA.ST | Alfa Laval", "ASSA-B.ST | Assa Abloy B",
+    "ATCO-A.ST | Atlas Copco A", "ATCO-B.ST | Atlas Copco B", "AZN.ST | AstraZeneca",
+    "BOL.ST | Boliden", "ELUX-B.ST | Electrolux B", "ERIC-B.ST | Ericsson B",
+    "ESSITY-B.ST | Essity B", "EVO.ST | Evolution", "GETI-B.ST | Getinge B",
+    "HEXA-B.ST | Hexagon B", "HM-B.ST | H&M B", "INVE-B.ST | Investor B",
+    "KINV-B.ST | Kinnevik B", "NDA-SE.ST | Nordea Bank", "NIBE-B.ST | Nibe Industrier",
+    "SAAB-B.ST | Saab B", "SAND.ST | Sandvik", "SCA-B.ST | SCA B",
+    "SCIB-B.ST | Scibase", "SEB-A.ST | SEB A", "SECU-B.ST | Securitas B",
+    "SHB-A.ST | Handelsbanken A", "SINCH.ST | Sinch", "SKA-B.ST | Skanska B",
+    "SKF-B.ST | SKF B", "SSAB-A.ST | SSAB A", "SSAB-B.ST | SSAB B",
+    "SWED-A.ST | Swedbank A", "TEL2-B.ST | Tele2 B", "TELIA.ST | Telia Company",
+    "VOLV-B.ST | Volvo B", "VOLCAR-B.ST | Volvo Cars",
+
+    # --- 🇸🇪 LARGE & MID CAP (Liquid) ---
+    "AAK.ST | AAK", "AFRY.ST | AFRY", "ALIV-SDB.ST | Autoliv",
+    "AXFO.ST | Axfood", "BALD-B.ST | Balder", "BEIJ-B.ST | Beijer Ref",
+    "BETCO.ST | Betsson B", "BILL.ST | Billerud", "BRAV.ST | Bravida",
+    "CAST.ST | Castellum", "DOM.ST | Dometic", "FABG.ST | Fabege",
+    "HEM.ST | Hemnet", "HPOL-B.ST | Hexpol", "HUSQ-B.ST | Husqvarna",
+    "INDU-C.ST | Indutrade", "JM.ST | JM AB", "LATO-B.ST | Latour",
+    "LIFCO-B.ST | Lifco", "LOOMIS.ST | Loomis", "MTRS.ST | Munters",
+    "MYCR.ST | Mycronic", "NCC-B.ST | NCC B", "NYF.ST | Nyfosa",
+    "PEAB-B.ST | Peab", "SAGA-B.ST | Sagax B", "SBB-B.ST | SBB",
+    "SWE-A.ST | Sweco A", "THULE.ST | Thule", "TREL-B.ST | Trelleborg",
+    "VITR.ST | Vitrolife", "WALL-B.ST | Wallenstam", "WIHL.ST | Wihlborgs",
+
+    # --- 🚀 GROWTH & FIRST NORTH PREMIER ---
+    "EMBRAC-B.ST | Embracer Group", "FNOX.ST | Fortnox", "STORY-B.ST | Storytel",
+    "VIMIAN.ST | Vimian", "AVANZ.ST | Avanza Bank", "SAVE.ST | Nordnet",
+    "TRUE-B.ST | Truecaller", "NOTE.ST | Note",
+
+    # --- 🇩🇰 🇳🇴 NORDIC GIANTS ---
+    "NOVO-B.CO | Novo Nordisk (DK)", "MAERSK-B.CO | Maersk (DK)", 
+    "DANSKE.CO | Danske Bank (DK)", "EQNR.OL | Equinor (NO)", 
+    "MOWI.OL | Mowi (NO)", "YAR.OL | Yara (NO)",
+
+    # --- 🇺🇸 US & CRYPTO (Reference) ---
+    "AAPL | Apple", "TSLA | Tesla", "NVDA | Nvidia", "MSFT | Microsoft",
+    "AMD | AMD", "COIN | Coinbase", "BTC-USD | Bitcoin", "ETH-USD | Ethereum"
 ]
 
 def get_google_sheet_data():
@@ -77,7 +95,6 @@ def send_notification(title, message):
         
         # 3. Check for HTTP errors
         if resp.status_code == 200:
-            # Success! (Silent or print to console log)
             print(f"Notification sent to {topic}")
         else:
             st.error(f"Ntfy Failed (Code {resp.status_code}): {resp.text}")
