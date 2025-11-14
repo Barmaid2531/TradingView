@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from utils import read_portfolio, get_google_sheet_data
+from utils import read_portfolio
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -46,19 +46,22 @@ top_holding = "None"
 
 if not portfolio_df.empty:
     # Filter for open positions
-    open_pos = portfolio_df[portfolio_df['Status'] == 'Open']
-    active_positions = len(open_pos)
+    open_pos = portfolio_df[portfolio_df['Status'] == 'Open'].copy()
     
-    if active_positions > 0:
-        # We need to fetch live prices to calculate true total value
-        # (We do a quick fetch here, or just use Entry Price for speed if preferred)
-        # Let's do a quick estimate using Entry Price to save API calls on Home load, 
-        # or fetch live if you prefer accuracy. Let's use Entry Price for speed:
-        total_value = (open_pos['EntryPrice'] * open_pos['Quantity']).sum()
+    if not open_pos.empty:
+        active_positions = len(open_pos)
         
-        # Identify largest position by invested amount
+        # --- SAFETY FIX: Force columns to numeric to prevent crashes ---
+        open_pos['EntryPrice'] = pd.to_numeric(open_pos['EntryPrice'], errors='coerce').fillna(0)
+        open_pos['Quantity'] = pd.to_numeric(open_pos['Quantity'], errors='coerce').fillna(0)
+        
+        # Calculate Total Invested Capital (Entry Price * Qty)
         open_pos['Invested'] = open_pos['EntryPrice'] * open_pos['Quantity']
-        top_holding = open_pos.sort_values('Invested', ascending=False).iloc[0]['Ticker']
+        total_value = open_pos['Invested'].sum()
+        
+        # Find largest holding
+        if total_value > 0:
+            top_holding = open_pos.sort_values('Invested', ascending=False).iloc[0]['Ticker']
 
 # --- DASHBOARD UI ---
 
@@ -80,7 +83,6 @@ with col1:
 with col2:
     st.subheader("💼 Portfolio Equity")
     # Note: This is based on Entry Price (Invested Capital). 
-    # For Live Value, visit the Portfolio page.
     st.metric(
         label="Invested Capital", 
         value=f"{total_value:,.0f} SEK",
@@ -90,4 +92,37 @@ with col2:
 
 with col3:
     st.subheader("🏆 Top Holding")
-    st.metric
+    st.metric(label="Largest Position", value=top_holding)
+
+st.markdown("---")
+
+# Row 2: Quick Actions / Navigation
+st.subheader("🚀 Quick Actions")
+
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    with st.container(border=True):
+        st.markdown("### 🔍 Deep Analysis")
+        st.write("Analyze individual stocks with RSI, MACD, and AI scoring.")
+        st.page_link("pages/Analysis.py", label="Go to Analysis", icon="🔍")
+
+with c2:
+    with st.container(border=True):
+        st.markdown("### 🤖 AI Screener")
+        st.write("Scan the entire OMXS30 index for buy/sell signals.")
+        st.page_link("pages/AI_Screener.py", label="Go to Screener", icon="🤖")
+
+with c3:
+    with st.container(border=True):
+        st.markdown("### 📝 Manage Portfolio")
+        st.write("View live P/L, close positions, and add new trades.")
+        st.page_link("pages/My_Portfolio.py", label="Go to Portfolio", icon="📝")
+
+# Row 3: Recent Activity
+if not portfolio_df.empty:
+    closed_trades = portfolio_df[portfolio_df['Status'] != 'Open']
+    if not closed_trades.empty:
+        st.markdown("---")
+        st.subheader("📜 Recently Closed Trades")
+        st.dataframe(closed_trades.tail(3), use_container_width=True)
