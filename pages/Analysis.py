@@ -63,6 +63,9 @@ def calculate_verdict(latest):
     if latest['Close'] > latest['SMA200']: 
         score += 1
         reasons.append("Price > 200 SMA (Long term Bullish)")
+    else:
+        score -= 1
+        reasons.append("Price < 200 SMA (Long term Bearish)")
     
     # Momentum (RSI)
     if 30 < latest['RSI'] < 70:
@@ -78,6 +81,8 @@ def calculate_verdict(latest):
     if latest['MACD'] > latest['Signal_Line']:
         score += 1
         reasons.append("MACD Bullish Crossover")
+    else:
+        reasons.append("MACD Bearish")
         
     # Bollinger
     if latest['Close'] < latest['BB_Lower']:
@@ -101,22 +106,36 @@ def calculate_verdict(latest):
 # --- MAIN PAGE UI ---
 
 st.title("🔍 Deep Dive Analysis")
-st.markdown("Select a stock to view advanced technical indicators and AI-generated insights.")
+st.markdown("Analyze any stock. Select from your watchlist or type a custom ticker (e.g., **AAPL**, **BTC-USD**).")
 
-# Search Bar
-col1, col2 = st.columns([3, 1])
-with col1:
-    selected_stock = st.selectbox(
-        "Select Stock to Analyze", 
-        options=STOCK_LIST, 
-        index=None, 
-        placeholder="Type to search (e.g., ERIC-B.ST)..."
-    )
-
-if selected_stock:
-    ticker = selected_stock.split("|")[0].strip()
+# --- NEW SEARCH INTERFACE ---
+with st.container(border=True):
+    c1, c2 = st.columns(2)
     
-    with st.spinner(f"Crunching numbers for {ticker}..."):
+    with c1:
+        selected_list_stock = st.selectbox(
+            "Option A: Select from Swedish List", 
+            options=STOCK_LIST, 
+            index=None, 
+            placeholder="Select a Swedish stock..."
+        )
+        
+    with c2:
+        custom_ticker = st.text_input(
+            "Option B: Type ANY Ticker", 
+            placeholder="e.g. AAPL, TSLA, NVDA, BTC-USD"
+        )
+
+# Logic: Custom ticker takes priority if typed
+ticker = None
+if custom_ticker:
+    ticker = custom_ticker.strip().upper()
+elif selected_list_stock:
+    ticker = selected_list_stock.split("|")[0].strip()
+
+# --- ANALYSIS OUTPUT ---
+if ticker:
+    with st.spinner(f"Analyzing {ticker}..."):
         data = get_stock_analysis(ticker)
     
     if data:
@@ -128,7 +147,7 @@ if selected_stock:
         st.markdown("---")
         h1, h2, h3, h4 = st.columns(4)
         
-        currency = info.get('currency', 'SEK')
+        currency = info.get('currency', '???')
         h1.metric("Current Price", f"{latest['Close']:,.2f} {currency}")
         h2.metric("Sector", info.get('sector', 'N/A'))
         
@@ -138,7 +157,8 @@ if selected_stock:
         
         # Market Cap formatting
         mcap = info.get('marketCap', 0)
-        if mcap > 1_000_000_000: val_str = f"{mcap/1_000_000_000:.1f}B"
+        if mcap > 1_000_000_000_000: val_str = f"{mcap/1_000_000_000_000:.1f}T"
+        elif mcap > 1_000_000_000: val_str = f"{mcap/1_000_000_000:.1f}B"
         elif mcap > 1_000_000: val_str = f"{mcap/1_000_000:.1f}M"
         else: val_str = f"{mcap:,.0f}"
         h4.metric("Market Cap", f"{val_str} {currency}")
