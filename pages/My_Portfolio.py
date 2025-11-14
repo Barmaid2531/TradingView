@@ -9,24 +9,17 @@ import os
 from pathlib import Path
 
 # --- IMPORT UTILS FROM PARENT DIRECTORY ---
-# This allows us to access the Google Sheets logic and Stock List
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import read_portfolio, save_portfolio, send_notification, STOCK_LIST
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="My Portfolio")
 
-# --- CSS FIX FOR BROKEN ICONS ---
-# Hides the broken arrow text caused by corporate firewalls
+# --- CSS FIX ---
 st.markdown("""
     <style>
-    div[data-testid="stExpander"] summary > span:first-child {
-        display: none !important;
-    }
-    div[data-testid="stExpander"] {
-        border: 1px solid #333;
-        border-radius: 5px;
-    }
+    div[data-testid="stExpander"] summary > span:first-child { display: none !important; }
+    div[data-testid="stExpander"] { border: 1px solid #333; border-radius: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -34,19 +27,14 @@ st.title("💼 My Cloud Portfolio")
 
 # --- DATA FETCHING & ANALYSIS FUNCTIONS ---
 
-# FIX 1: Reduced cache to 5 minutes (300 seconds) so prices update during the day
 @st.cache_data(ttl=300) 
 def get_position_details(ticker):
     """Fetches price, indicators, and chart data for a stock."""
     try:
         stock = yf.Ticker(ticker)
-        
-        # Fetch history
         hist = stock.history(period="1y")
         
-        # Check if data is empty (common yfinance error)
         if hist.empty: 
-            # Try fetching with a suffix fix if needed, or just report error
             st.error(f"⚠️ Data empty for {ticker}. Check ticker symbol.")
             return None
 
@@ -59,53 +47,54 @@ def get_position_details(ticker):
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
-        
-        # --- FIX 2: Save 'RSI' into the DataFrame (hist) ---
-        # Previously this was 'rsi = ...', which caused the KeyError later
-        hist['RSI'] = 100 - (100 / (1 + rs))
+        hist['RSI'] = 100 - (100 / (1 + rs)) # Fix: Save RSI to dataframe
         
         latest = hist.iloc[-1]
         
-        # Analyze for Exit Signals
+        # --- NEW STRATEGY LOGIC ---
         signal = "HOLD"
-        
-        # Safely access RSI (handle NaN if stock is too new or data is missing)
         current_rsi = latest['RSI'] if 'RSI' in latest and pd.notna(latest['RSI']) else 50
-        
-        if current_rsi > 75:
-            signal = "SELL: RSI Overbought (>75)"
-        elif pd.notna(latest['SMA50']) and pd.notna(latest['SMA200']):
-            if latest['SMA50'] < latest['SMA200']:
+        sma50 = latest['SMA50']
+        sma200 = latest['SMA200']
+
+        # Check conditions if SMAs are valid
+        if pd.notna(sma50) and pd.notna(sma200):
+            # SELL SIGNALS
+            if current_rsi > 70:
+                signal = "SELL: RSI Overbought (>70)"
+            elif sma50 < sma200:
                 signal = "SELL: Death Cross (50 < 200 SMA)"
+            
+            # BUY SIGNALS (Prioritize Buy if recent crossover)
+            elif current_rsi < 30:
+                signal = "BUY: RSI Oversold (<30)"
+            elif sma50 > sma200:
+                signal = "BUY: Golden Cross (Bullish Trend)"
 
         return {
             "price": latest['Close'],
             "rsi": current_rsi,
-            "sma50": latest['SMA50'],
-            "sma200": latest['SMA200'],
+            "sma50": sma50,
+            "sma200": sma200,
             "signal": signal,
             "chart_data": hist
         }
     except Exception as e:
-        # Print the actual error so we can debug it in the UI
         st.error(f"Error fetching {ticker}: {e}")
         return None
 
 def get_position_details_with_retry(ticker, retries=3):
-    """Retries fetching data if the API fails temporarily."""
     for i in range(retries):
         res = get_position_details(ticker)
         if res: return res
-        time.sleep(1) # Wait 1 second before retrying
+        time.sleep(1) 
     return None
 
 def create_portfolio_chart(data, entry_price):
-    """Generates the Price vs SMA chart with Entry Level."""
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data.index, y=data['Close'], mode='lines', name='Price', line=dict(color='#007BFF')))
     fig.add_trace(go.Scatter(x=data.index, y=data['SMA50'], mode='lines', name='50 SMA', line=dict(color='orange', dash='dot')))
     fig.add_trace(go.Scatter(x=data.index, y=data['SMA200'], mode='lines', name='200 SMA', line=dict(color='purple', dash='dot')))
-    # Entry Price Line
     fig.add_hline(y=entry_price, line_width=2, line_dash="dash", line_color="green", annotation_text="Entry", annotation_position="bottom right")
     fig.update_layout(template='plotly_dark', height=400, margin=dict(l=20, r=20, t=40, b=20))
     return fig
@@ -119,133 +108,4 @@ def add_manual_holding(ticker, quantity, gav, notes):
         'EntryDate': 'Existing', 
         'EntryPrice': gav, 
         'Quantity': quantity, 
-        'Status': 'Open', 
-        'Notes': notes
-    }])
-    
-    if df.empty:
-        df = new_trade
-    else:
-        df = pd.concat([df, new_trade], ignore_index=True)
-        
-    save_portfolio(df)
-    st.toast(f"Added {ticker}", icon="➕")
-
-def update_holding(index, qty, gav, notes):
-    df = read_portfolio()
-    df.loc[index, 'Quantity'] = qty
-    df.loc[index, 'EntryPrice'] = gav
-    df.loc[index, 'Notes'] = notes
-    save_portfolio(df)
-    st.toast("Holding updated!", icon="📝")
-
-def update_status(index, status):
-    df = read_portfolio()
-    df.loc[index, 'Status'] = status
-    save_portfolio(df)
-
-def remove_holding(index):
-    df = read_portfolio()
-    df = df.drop(index).reset_index(drop=True)
-    save_portfolio(df)
-    st.toast("Removed.", icon="🗑️")
-
-# --- MAIN PAGE CONTENT ---
-
-# 1. Manual Add Section
-with st.expander("Manually Add Holding"):
-    with st.form(key="manual"):
-        # Auto-complete Dropdown
-        stock_selection = st.selectbox("Select Stock", options=STOCK_LIST, index=None, placeholder="Search ticker (e.g. Volvo)...")
-        
-        c1, c2 = st.columns(2)
-        q = c1.number_input("Shares", min_value=1, step=1)
-        p = c2.number_input("Avg Price (GAV)")
-        n = st.text_area("Notes")
-        
-        if st.form_submit_button("Add to Portfolio"):
-            if stock_selection and q > 0:
-                # Parse "VOLV-B.ST | Volvo" to get just "VOLV-B.ST"
-                t = stock_selection.split("|")[0].strip()
-                add_manual_holding(t, q, p, n)
-                st.rerun()
-            elif not stock_selection:
-                st.error("Please select a stock from the list.")
-
-# 2. Load Portfolio Data
-portfolio_df = read_portfolio()
-
-if portfolio_df.empty:
-    st.info("Your portfolio is empty. Add stocks using the form above or the AI Screener.")
-else:
-    # Filter for Open positions
-    open_pos = portfolio_df[portfolio_df['Status'] == 'Open'].copy()
-    total_val = 0
-
-    if not open_pos.empty:
-        st.markdown("### Open Positions")
-        
-        for i, row in open_pos.iterrows():
-            # Fetch Live Data
-            det = get_position_details_with_retry(row['Ticker'])
-            
-            st.markdown("---")
-            st.subheader(f"{row['Ticker']} ({row['Quantity']} shares)")
-
-            # Logic for displaying data if fetch succeeded
-            if det:
-                val = det['price'] * row['Quantity']
-                total_val += val
-                pnl = ((det['price'] / row['EntryPrice']) - 1) * 100 if row['EntryPrice'] > 0 else 0
-                
-                # Check for Sell Signals
-                if "SELL" in det['signal']:
-                    st.error(det['signal'])
-                    # Notify user (optional, creates noise if re-running often)
-                    send_notification(f"SELL: {row['Ticker']}", f"{det['signal']}")
-                else: 
-                    st.success(det['signal'])
-                
-                # Metrics Row
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Value", f"{val:,.2f} SEK")
-                c2.metric("Entry", f"{row['EntryPrice']:,.2f} SEK")
-                c3.metric("Price", f"{det['price']:.2f} SEK")
-                c4.markdown(f"**P/L:** <span style='color:{'green' if pnl>=0 else 'red'}'>{pnl:.2f}%</span>", unsafe_allow_html=True)
-                
-                chart_data = det['chart_data']
-            else:
-                st.warning("⚠️ Could not fetch live data. You can still manage this position below.")
-                chart_data = None
-
-            # Management Section (Always Visible)
-            with st.expander("Details & Actions"):
-                if chart_data is not None:
-                    st.plotly_chart(create_portfolio_chart(chart_data, row['EntryPrice']), use_container_width=True)
-                
-                st.markdown("**Edit Details**")
-                with st.form(key=f"edit_{i}"):
-                    nq = st.number_input("Qty", value=float(row['Quantity']))
-                    np = st.number_input("Price", value=float(row['EntryPrice']))
-                    nn = st.text_area("Notes", value=str(row['Notes']) if pd.notna(row['Notes']) else "")
-                    if st.form_submit_button("Save Changes"): 
-                        update_holding(i, nq, np, nn)
-                        st.rerun()
-                
-                st.markdown("**Actions**")
-                b1, b2 = st.columns(2)
-                if b1.button("Close Position", key=f"cl_{i}"): 
-                    update_status(i, f"Closed {datetime.now().date()}")
-                    st.rerun()
-                if b2.button("Remove Permanently", key=f"rm_{i}", type="primary"): 
-                    remove_holding(i)
-                    st.rerun()
-        
-        st.markdown("---")
-        st.header(f"Total Portfolio Value: {total_val:,.2f} SEK")
-
-    # 3. History Section
-    st.markdown("### Position History")
-    closed = portfolio_df[portfolio_df['Status'] != 'Open']
-    if not closed.empty: 
-        st.dataframe(closed)
+        'Status': 'Open',
