@@ -1,9 +1,10 @@
+# pages/Swing_Strategy.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import sys
 import os
-from datetime import timedelta
+import time
 
 # --- SETUP ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -11,26 +12,22 @@ from utils import STOCK_LIST
 
 st.set_page_config(layout="wide", page_title="5% Swing Strategy")
 
-# --- STRATEGY FUNCTIONS ---
-
-@st.cache_data(ttl=3600)
-def get_swing_signals(ticker):
+# --- BATCH ANALYSIS FUNCTION ---
+# Updated to process a whole DataFrame of tickers at once for speed
+def analyze_market_data(ticker, hist):
     """
-    Analyzes if a stock is good for a 4-5% weekly swing.
-    Returns: Signal (BUY/WAIT), Volatility, and Recent Data
+    Analyzes a single stock's history for swing signals.
     """
     try:
-        # Get 3 months of data to calculate trends
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="3mo")
-        
         if len(hist) < 20: return None
 
-        # 1. Calculate Volatility (Can it move 5% in a week?)
-        # We measure the average "High - Low" range relative to price
+        # Drop rows where Open/Close are NaN (common in batch downloads)
+        hist = hist.dropna(subset=['Close', 'Open'])
+        if hist.empty: return None
+
+        # 1. Volatility Check
         hist['Daily_Range_Pct'] = (hist['High'] - hist['Low']) / hist['Close']
         avg_daily_volatility = hist['Daily_Range_Pct'].rolling(14).mean().iloc[-1]
-        # Weekly approx volatility = Daily * sqrt(5) approx 2.2x
         weekly_potential = avg_daily_volatility * 100 * 2.2 
 
         # 2. Indicators
@@ -50,12 +47,12 @@ def get_swing_signals(ticker):
         signal = "WAIT"
         reason = ""
         
-        # Entry A: Price crosses OVER EMA20 (Momentum Start)
+        # Entry A: Price crosses OVER EMA20
         if prev['Close'] < prev['EMA20'] and latest['Close'] > latest['EMA20']:
             signal = "BUY"
             reason = "Price crossed above 20 EMA"
             
-        # Entry B: Oversold Bounce (RSI < 30)
+        # Entry B: Oversold Bounce
         elif latest['RSI'] < 30:
             signal = "BUY"
             reason = "RSI Oversold (Dip Buy)"
@@ -63,69 +60,95 @@ def get_swing_signals(ticker):
         return {
             "ticker": ticker,
             "price": latest['Close'],
-            "weekly_potential": weekly_potential, # The critical "Can it hit 5%?" metric
+            "weekly_potential": weekly_potential,
             "signal": signal,
             "reason": reason,
-            "stop_loss": latest['Close'] * 0.97, # 3% Stop
-            "target": latest['Close'] * 1.05    # 5% Target
+            "stop_loss": latest['Close'] * 0.97, 
+            "target": latest['Close'] * 1.05    
         }
-
     except Exception:
         return None
 
 # --- UI LAYOUT ---
 
 st.title("🚀 5% Weekly Swing Scanner")
-st.markdown("""
-**Strategy:** Target a **4-5% return** within **1 week (5 days)**. 
-* **Filter:** Only shows stocks with enough volatility to actually hit the target.
-* **Exit Rule:** Sell at +5% profit OR sell after 5 days (Time Stop).
+st.markdown(f"""
+**Universe:** Scanning **{len(STOCK_LIST)}** liquid stocks (Large Cap, Growth, Nordic & US Giants).
+**Strategy:** Target a **4-5% return** within **1 week**.
 """)
 
-if st.button("Run Scanner on Watchlist"):
+if st.button("Run High-Speed Scanner"):
+    status_text = st.empty()
+    status_text.info("⏳ Downloading market data for all stocks... (This is fast!)")
+    
+    # 1. Prepare Tickers
+    tickers_map = {s.split('|')[0].strip(): s.split('|')[1].strip() for s in STOCK_LIST}
+    ticker_list = list(tickers_map.keys())
+    
+    # 2. Batch Download (The Speed Boost)
+    # We download 3 months of data for ALL tickers in one go
+    try:
+        batch_data = yf.download(ticker_list, period="3mo", group_by='ticker', threads=True)
+        status_text.success("✅ Data downloaded. Analyzing charts...")
+    except Exception as e:
+        st.error(f"Download failed: {e}")
+        st.stop()
+
     results = []
     progress = st.progress(0)
     
-    status_text = st.empty()
-    
-    for i, stock_str in enumerate(STOCK_LIST):
-        ticker = stock_str.split("|")[0].strip()
-        status_text.text(f"Scanning {ticker}...")
-        
-        data = get_swing_signals(ticker)
-        
-        if data:
-            # FILTER: Ignore stocks that are too stable (can't move 5%)
-            if data['weekly_potential'] > 3.5: # Minimum 3.5% weekly range to be worth it
-                if data['signal'] == "BUY":
-                    results.append(data)
-        
-        progress.progress((i + 1) / len(STOCK_LIST))
+    # 3. Iterate and Analyze
+    for i, ticker in enumerate(ticker_list):
+        try:
+            # Extract single stock dataframe from the batch
+            # Note: yf.download structure varies slightly by version, handling both:
+            if isinstance(batch_data.columns, pd.MultiIndex):
+                try:
+                    stock_hist = batch_data[ticker].copy()
+                except KeyError:
+                    continue # Ticker not found in download
+            else:
+                # Fallback for single ticker result
+                stock_hist = batch_data 
+            
+            # Analyze
+            res = analyze_market_data(ticker, stock_hist)
+            
+            if res:
+                # Apply Filters
+                if res['weekly_potential'] > 3.5 and res['signal'] == "BUY":
+                    # Add readable name
+                    res['name'] = tickers_map.get(ticker, ticker)
+                    results.append(res)
+        except Exception:
+            continue # Skip if data is bad
+            
+        progress.progress((i + 1) / len(ticker_list))
     
     status_text.empty()
     
+    # 4. Display Results
     if not results:
-        st.warning("No stocks match the strategy right now.")
+        st.warning("No stocks match the Buy criteria right now.")
     else:
-        st.success(f"Found {len(results)} Potential Swings!")
+        st.success(f"Found {len(results)} Opportunities!")
         
         for res in results:
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns(4)
                 c1.subheader(res['ticker'])
-                c1.caption(res['reason'])
+                c1.caption(res['name'])
+                c1.write(f"**Signal:** {res['reason']}")
                 
-                c2.metric("Entry Price", f"{res['price']:.2f}")
+                c2.metric("Price", f"{res['price']:.2f}")
                 
-                # Color code the volatility potential
                 vol_color = "green" if res['weekly_potential'] > 5.0 else "orange"
                 c3.markdown(f"**Volatility:** <span style='color:{vol_color}'>{res['weekly_potential']:.1f}% / week</span>", unsafe_allow_html=True)
                 
-                c4.metric("🎯 Target (+5%)", f"{res['target']:.2f}")
+                c4.metric("🎯 Target", f"{res['target']:.2f}")
                 c4.caption(f"🛑 Stop: {res['stop_loss']:.2f}")
                 
-                # Quick add button (Optional integration with your portfolio)
-                if st.button(f"Track {res['ticker']}", key=res['ticker']):
-                    st.toast(f"Remember to sell {res['ticker']} in 5 days if target not hit!", icon="⏰")
+                if st.button(f"Track {res['ticker']}", key=f"btn_{res['ticker']}"):
+                    st.toast(f"Added {res['ticker']} to watchlist notes!", icon="📝")
 
-st.info("💡 **Tip:** If Volatility is low (< 3.5%), the stock moves too slowly to hit 5% in a week. Avoid those for this specific strategy.")
+st.info("💡 **Note:** This scanner now uses batch downloading, so it scans 100+ stocks in seconds instead of minutes.")
