@@ -66,14 +66,21 @@ if st.button("Run Backtest"):
         with st.spinner(f"Downloading 3 years of data for {ticker}..."):
             data = yf.download(ticker, period="3y", progress=False)
         
-        # Fix for new YFinance multi-level columns (prevent KeyError)
+        # --- CRITICAL FIX FOR YFINANCE UPDATE ---
+        # The backtesting library fails if columns are MultiIndex (e.g. Price, Ticker)
+        # We must flatten them to just 'Open', 'High', 'Low', 'Close', 'Volume'
+        
         if isinstance(data.columns, pd.MultiIndex):
+            # If columns look like ('Close', 'AAPL'), drop the ticker level
             try:
-                data = data.xs(ticker, axis=1, level=0)
+                data.columns = data.columns.droplevel(1) 
             except:
-                # Fallback if xs fails or structure is different
-                data.columns = data.columns.droplevel(0)
+                pass
 
+        # Rename columns to ensure they match exactly what Backtesting.py expects
+        # (Sometimes yfinance returns "Adj Close" which we might want to rename or just use Close)
+        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        
         # Ensure we have data
         if data.empty:
             st.error("No data found. Try a different stock.")
