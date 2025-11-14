@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta  # Optional, but we will define helpers manually below to be safe
+# import pandas_ta as ta  <-- REMOVED THIS LINE TO FIX THE ERROR
 from backtesting import Backtest, Strategy
 from backtesting.lib import crossover
 import sys
@@ -13,7 +13,8 @@ from utils import STOCK_LIST
 
 st.set_page_config(layout="wide", page_title="Strategy Backtester")
 
-# --- HELPER FUNCTIONS (Must be outside the class for self.I to work pickle-wise) ---
+# --- HELPER FUNCTIONS (Manual Calculation) ---
+# These replace the need for external libraries like TA-Lib or pandas_ta
 def SMA(values, n):
     """
     Return simple moving average of `values`, at
@@ -37,8 +38,8 @@ class RsiOscillator(Strategy):
     lower_bound = 30
     
     def init(self):
-        # FIX: Use self.I() to register the indicator
-        # This ensures backtesting.py handles the array slicing correctly
+        # We wrap the indicator calculation in self.I()
+        # This registers it with the backtester engine
         self.rsi = self.I(RSI, self.data.Close, 14)
 
     def next(self):
@@ -52,7 +53,6 @@ class SmaCross(Strategy):
     n2 = 200
     
     def init(self):
-        # FIX: Use self.I() to register indicators
         self.sma1 = self.I(SMA, self.data.Close, self.n1)
         self.sma2 = self.I(SMA, self.data.Close, self.n2)
 
@@ -78,7 +78,6 @@ if st.button("Run Backtest"):
         # 1. Get Data (Cleaner Method)
         with st.spinner(f"Downloading data for {ticker}..."):
             # Using Ticker().history is safer than download() for single stocks
-            # It avoids MultiIndex columns issues entirely
             data = yf.Ticker(ticker).history(period="3y")
         
         # 2. Data Cleaning
@@ -86,13 +85,13 @@ if st.button("Run Backtest"):
             st.error("No data found. Try another stock.")
             st.stop()
             
-        # Drop timezone (Critical for backtesting.py)
+        # Drop timezone (Critical for backtesting.py to avoid -1 error)
         data.index = data.index.tz_localize(None)
         
         # Ensure columns are correct
         data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
         
-        # Drop NaNs (e.g. from recent splits or partial data)
+        # Drop NaNs
         data = data.dropna()
 
         # 3. Choose Strategy
@@ -106,8 +105,9 @@ if st.button("Run Backtest"):
         st.markdown("### 📊 Performance Report")
         
         res1, res2, res3, res4 = st.columns(4)
-        # Helper to safe format
-        def safe_fmt(val): return f"{val:.2f}%" if isinstance(val, (int, float)) else str(val)
+        # Helper to safe format numbers
+        def safe_fmt(val): 
+            return f"{val:.2f}%" if isinstance(val, (int, float)) else str(val)
         
         res1.metric("Return", safe_fmt(stats['Return [%]']))
         res2.metric("Win Rate", safe_fmt(stats['Win Rate [%]']))
