@@ -1,133 +1,233 @@
-# pages/My_Portfolio.py
-import os
-import json
-import time
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-from utils import (
-    read_sheet_public_csv,
-    read_sheet_private,
-    normalize_holdings_df,
-    fetch_prices,
-    compute_portfolio,
-    GS_ENABLED,
-)
+import plotly.graph_objects as go
+from datetime import datetime
+import time
+import sys
+import os
+from pathlib import Path
 
-st.set_page_config(page_title="My Portfolio", layout="wide")
-st.title("My Portfolio")
+# --- IMPORT UTILS FROM PARENT DIRECTORY ---
+# This allows us to access the Google Sheets logic and Stock List
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils import read_portfolio, save_portfolio, send_notification, STOCK_LIST
 
-with st.sidebar.expander("Google Sheet settings", expanded=True):
-    st.markdown("**Select how the Google Sheet is provided**")
-    mode = st.selectbox("Sheet mode", options=["public_csv", "service_account"], help="public_csv: published sheet CSV URL. service_account: private sheet using service account JSON.")
-    if mode == "public_csv":
-        csv_url = st.text_input("Published CSV Export URL", value=os.getenv("SHEET_CSV_URL", ""))
-        st.caption("Example: https://docs.google.com/spreadsheets/d/<ID>/export?format=csv&gid=<GID>")
-    else:
-        if not GS_ENABLED:
-            st.error("gspread/google-auth not installed or unavailable. Install gspread and google-auth.")
-        service_json = st.text_area("Service Account JSON (paste entire JSON)", value=os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", ""))
-        spreadsheet_id = st.text_input("Spreadsheet ID (from sheet URL)", value=os.getenv("GOOGLE_SPREADSHEET_ID", ""))
-        worksheet = st.text_input("Worksheet name or index (0)", value=os.getenv("GOOGLE_WORKSHEET", "0"))
+# --- PAGE CONFIGURATION ---
+st.set_page_config(layout="wide", page_title="My Portfolio")
 
-st.write("### Controls")
-col1, col2 = st.columns([1, 4])
-with col1:
-    if st.button("Fetch portfolio now"):
-        st.session_state.get_now = time.time()
-        st.experimental_rerun()
-with col2:
-    st.write("Last fetch:", st.session_state.get("last_fetch_time", "Never"))
+# --- CSS FIX FOR BROKEN ICONS ---
+# Hides the broken arrow text caused by corporate firewalls
+st.markdown("""
+    <style>
+    div[data-testid="stExpander"] summary > span:first-child {
+        display: none !important;
+    }
+    div[data-testid="stExpander"] {
+        border: 1px solid #333;
+        border-radius: 5px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# Load holdings
-holdings_df = None
-error = None
-if 'get_now' not in st.session_state:
-    st.session_state.get_now = None
+st.title("💼 My Cloud Portfolio")
 
-if mode == "public_csv" and csv_url:
-    with st.spinner("Reading published CSV..."):
-        try:
-            df_raw = read_sheet_public_csv(csv_url)
-            holdings_df = normalize_holdings_df(df_raw)
-        except Exception as e:
-            error = f"Failed to read public CSV: {e}"
-elif mode == "service_account" and service_json and spreadsheet_id:
+# --- DATA FETCHING & ANALYSIS FUNCTIONS ---
+
+@st.cache_data(ttl=43200) # Cache for 12 hours to reduce API calls
+def get_position_details(ticker):
+    """Fetches price, indicators, and chart data for a stock."""
     try:
-        svc = json.loads(service_json)
-    except Exception as e:
-        svc = None
-        error = f"Invalid service account JSON: {e}"
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1y")
+        if hist.empty: return None
 
-    if svc and not error:
-        try:
-            with st.spinner("Reading private sheet..."):
-                df_raw = read_sheet_private(svc, spreadsheet_id, int(worksheet) if worksheet.isdigit() else worksheet)
-                holdings_df = normalize_holdings_df(df_raw)
-        except Exception as e:
-            error = f"Failed to read private sheet: {e}"
-elif mode == "service_account":
-    if not GS_ENABLED:
-        st.warning("Service account reading disabled (missing gspread). Use public CSV mode or install gspread.")
+        # Calculate Moving Averages
+        hist['SMA50'] = hist['Close'].rolling(window=50).mean()
+        hist['SMA200'] = hist['Close'].rolling(window=200).mean()
+        
+        # Calculate RSI
+        delta = hist['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        latest = hist.iloc[-1]
+        
+        # Analyze for Exit Signals
+        signal = "HOLD"
+        if latest['RSI'] > 75:
+            signal = "SELL: RSI Overbought (>75)"
+        elif latest['SMA50'] < latest['SMA200']:
+            signal = "SELL: Death Cross (50 < 200 SMA)"
+
+        return {
+            "price": latest['Close'],
+            "rsi": latest['RSI'],
+            "sma50": latest['SMA50'],
+            "sma200": latest['SMA200'],
+            "signal": signal,
+            "chart_data": hist
+        }
+    except Exception:
+        return None
+
+def get_position_details_with_retry(ticker, retries=3):
+    """Retries fetching data if the API fails temporarily."""
+    for i in range(retries):
+        res = get_position_details(ticker)
+        if res: return res
+        time.sleep(1) # Wait 1 second before retrying
+    return None
+
+def create_portfolio_chart(data, entry_price):
+    """Generates the Price vs SMA chart with Entry Level."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=data.index, y=data['Close'], mode='lines', name='Price', line=dict(color='#007BFF')))
+    fig.add_trace(go.Scatter(x=data.index, y=data['SMA50'], mode='lines', name='50 SMA', line=dict(color='orange', dash='dot')))
+    fig.add_trace(go.Scatter(x=data.index, y=data['SMA200'], mode='lines', name='200 SMA', line=dict(color='purple', dash='dot')))
+    # Entry Price Line
+    fig.add_hline(y=entry_price, line_width=2, line_dash="dash", line_color="green", annotation_text="Entry", annotation_position="bottom right")
+    fig.update_layout(template='plotly_dark', height=400, margin=dict(l=20, r=20, t=40, b=20))
+    return fig
+
+# --- PORTFOLIO MANAGEMENT FUNCTIONS ---
+
+def add_manual_holding(ticker, quantity, gav, notes):
+    df = read_portfolio()
+    new_trade = pd.DataFrame([{
+        'Ticker': ticker.upper(), 
+        'EntryDate': 'Existing', 
+        'EntryPrice': gav, 
+        'Quantity': quantity, 
+        'Status': 'Open', 
+        'Notes': notes
+    }])
+    
+    if df.empty:
+        df = new_trade
     else:
-        st.info("Provide service account JSON and spreadsheet ID.")
+        df = pd.concat([df, new_trade], ignore_index=True)
+        
+    save_portfolio(df)
+    st.toast(f"Added {ticker}", icon="➕")
 
-if error:
-    st.error(error)
+def update_holding(index, qty, gav, notes):
+    df = read_portfolio()
+    df.loc[index, 'Quantity'] = qty
+    df.loc[index, 'EntryPrice'] = gav
+    df.loc[index, 'Notes'] = notes
+    save_portfolio(df)
+    st.toast("Holding updated!", icon="📝")
 
-if holdings_df is None:
-    st.info("No holdings loaded yet. Please configure sheet settings and click 'Fetch portfolio now'.")
-    st.stop()
+def update_status(index, status):
+    df = read_portfolio()
+    df.loc[index, 'Status'] = status
+    save_portfolio(df)
 
-# Show holdings preview
-st.subheader("Holdings preview")
-st.dataframe(holdings_df)
+def remove_holding(index):
+    df = read_portfolio()
+    df = df.drop(index).reset_index(drop=True)
+    save_portfolio(df)
+    st.toast("Removed.", icon="🗑️")
 
-# Fetch prices with caching - we use st.cache_data so repeated clicks are cheap
-@st.cache_data(ttl=30)  # cache for 30 seconds
-def _fetch_and_compute(symbols: list, qty_df: pd.DataFrame):
-    prices = fetch_prices(symbols)
-    portfolio_df, total = compute_portfolio(qty_df, prices)
-    return prices, portfolio_df, total
+# --- MAIN PAGE CONTENT ---
 
-with st.spinner("Fetching prices..."):
-    symbols = holdings_df["symbol"].tolist()
-    prices, portfolio_df, total = _fetch_and_compute(symbols, holdings_df)
+# 1. Manual Add Section
+with st.expander("Manually Add Holding"):
+    with st.form(key="manual"):
+        # Auto-complete Dropdown
+        stock_selection = st.selectbox("Select Stock", options=STOCK_LIST, index=None, placeholder="Search ticker (e.g. Volvo)...")
+        
+        c1, c2 = st.columns(2)
+        q = c1.number_input("Shares", min_value=1, step=1)
+        p = c2.number_input("Avg Price (GAV)")
+        n = st.text_area("Notes")
+        
+        if st.form_submit_button("Add to Portfolio"):
+            if stock_selection and q > 0:
+                # Parse "VOLV-B.ST | Volvo" to get just "VOLV-B.ST"
+                t = stock_selection.split("|")[0].strip()
+                add_manual_holding(t, q, p, n)
+                st.rerun()
+            elif not stock_selection:
+                st.error("Please select a stock from the list.")
 
-st.session_state['last_fetch_time'] = time.strftime("%Y-%m-%d %H:%M:%S")
+# 2. Load Portfolio Data
+portfolio_df = read_portfolio()
 
-# UX: show summary and table with statuses
-st.subheader("Portfolio summary")
-colA, colB = st.columns([1, 2])
-with colA:
-    st.metric("Total value (approx)", f"${total:,.2f}")
-    st.write(f"Last updated: {st.session_state.get('last_fetch_time')}")
-with colB:
-    # small bar chart of top positions by value
-    topn = portfolio_df.dropna(subset=["value"]).sort_values("value", ascending=False).head(10)
-    if not topn.empty:
-        st.bar_chart(topn.set_index("symbol")["value"])
-
-# Detailed table with status & retry
-st.subheader("Positions")
-def status_text(row):
-    if pd.isna(row["price"]):
-        return "Error: price not found"
-    return "OK"
-
-display_df = portfolio_df.copy()
-display_df["price"] = display_df["price"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "—")
-display_df["value"] = display_df["value"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "—")
-display_df["status"] = portfolio_df.apply(status_text, axis=1)
-st.table(display_df)
-
-# Retry failed
-failed_syms = portfolio_df[portfolio_df["price"].isna()]["symbol"].tolist()
-if failed_syms:
-    st.warning(f"Failed to fetch prices for: {', '.join(failed_syms)}")
-    if st.button("Retry failed symbols"):
-        # force a cache clear and re-fetch only failed symbols
-        st.cache_data.clear()
-        # re-run
-        st.experimental_rerun()
+if portfolio_df.empty:
+    st.info("Your portfolio is empty. Add stocks using the form above or the AI Screener.")
 else:
-    st.success("All prices fetched successfully.")
+    # Filter for Open positions
+    open_pos = portfolio_df[portfolio_df['Status'] == 'Open'].copy()
+    total_val = 0
+
+    if not open_pos.empty:
+        st.markdown("### Open Positions")
+        
+        for i, row in open_pos.iterrows():
+            # Fetch Live Data
+            det = get_position_details_with_retry(row['Ticker'])
+            
+            st.markdown("---")
+            st.subheader(f"{row['Ticker']} ({row['Quantity']} shares)")
+
+            # Logic for displaying data if fetch succeeded
+            if det:
+                val = det['price'] * row['Quantity']
+                total_val += val
+                pnl = ((det['price'] / row['EntryPrice']) - 1) * 100 if row['EntryPrice'] > 0 else 0
+                
+                # Check for Sell Signals
+                if "SELL" in det['signal']:
+                    st.error(det['signal'])
+                    # Notify user (optional, creates noise if re-running often)
+                    send_notification(f"SELL: {row['Ticker']}", f"{det['signal']}")
+                else: 
+                    st.success(det['signal'])
+                
+                # Metrics Row
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Value", f"{val:,.2f} SEK")
+                c2.metric("Entry", f"{row['EntryPrice']:,.2f} SEK")
+                c3.metric("Price", f"{det['price']:.2f} SEK")
+                c4.markdown(f"**P/L:** <span style='color:{'green' if pnl>=0 else 'red'}'>{pnl:.2f}%</span>", unsafe_allow_html=True)
+                
+                chart_data = det['chart_data']
+            else:
+                st.warning("⚠️ Could not fetch live data. You can still manage this position below.")
+                chart_data = None
+
+            # Management Section (Always Visible)
+            with st.expander("Details & Actions"):
+                if chart_data is not None:
+                    st.plotly_chart(create_portfolio_chart(chart_data, row['EntryPrice']), use_container_width=True)
+                
+                st.markdown("**Edit Details**")
+                with st.form(key=f"edit_{i}"):
+                    nq = st.number_input("Qty", value=float(row['Quantity']))
+                    np = st.number_input("Price", value=float(row['EntryPrice']))
+                    nn = st.text_area("Notes", value=str(row['Notes']) if pd.notna(row['Notes']) else "")
+                    if st.form_submit_button("Save Changes"): 
+                        update_holding(i, nq, np, nn)
+                        st.rerun()
+                
+                st.markdown("**Actions**")
+                b1, b2 = st.columns(2)
+                if b1.button("Close Position", key=f"cl_{i}"): 
+                    update_status(i, f"Closed {datetime.now().date()}")
+                    st.rerun()
+                if b2.button("Remove Permanently", key=f"rm_{i}", type="primary"): 
+                    remove_holding(i)
+                    st.rerun()
+        
+        st.markdown("---")
+        st.header(f"Total Portfolio Value: {total_val:,.2f} SEK")
+
+    # 3. History Section
+    st.markdown("### Position History")
+    closed = portfolio_df[portfolio_df['Status'] != 'Open']
+    if not closed.empty: 
+        st.dataframe(closed)
